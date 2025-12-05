@@ -281,13 +281,56 @@ export async function pushFilesAsCommit({
         );
         const baseTreeSHA = res.data.tree.sha;
 
+        // Validate and sanitize files before creating tree
+        console.log(`[git.ts] Validating ${files.length} files before creating tree...`);
+        const validatedFiles = files
+            .filter(file => {
+                // Filter out files with empty or invalid content
+                if (!file.content || file.content.trim().length === 0) {
+                    console.warn(`[git.ts] Skipping empty file: ${file.path}`);
+                    return false;
+                }
+
+                // Filter out files with invalid paths
+                if (!file.path || file.path.trim().length === 0) {
+                    console.warn(`[git.ts] Skipping file with empty path`);
+                    return false;
+                }
+
+                // GitHub doesn't allow certain characters in file paths
+                const invalidChars = /[<>:"|?*\x00-\x1F]/;
+                if (invalidChars.test(file.path)) {
+                    console.warn(`[git.ts] Skipping file with invalid characters in path: ${file.path}`);
+                    return false;
+                }
+
+                return true;
+            })
+            .map(file => ({
+                // Normalize path separators to forward slashes
+                path: file.path.replace(/\\/g, '/').trim(),
+                content: file.content
+            }));
+
+        if (validatedFiles.length === 0) {
+            throw new Error('No valid files to commit after validation');
+        }
+
+        console.log(`[git.ts] ${validatedFiles.length} files passed validation`);
+        if (validatedFiles.length < files.length) {
+            console.warn(`[git.ts] ${files.length - validatedFiles.length} files were filtered out`);
+        }
+
+        // Log file paths for debugging
+        console.log(`[git.ts] File paths to be committed:`, validatedFiles.map(f => f.path).join(', '));
+
         // 4. Create new tree
-        console.log(`[git.ts] Creating new tree with ${files.length} files...`);
+        console.log(`[git.ts] Creating new tree with ${validatedFiles.length} files...`);
         const newTreeSHA = await createTree(
             owner,
             repo,
             baseTreeSHA,
-            files,
+            validatedFiles,
             token
         );
 
@@ -316,6 +359,26 @@ export async function pushFilesAsCommit({
         console.error("Failed Request URL:", error.config?.url);
         console.error("Failed Request Method:", error.config?.method);
         console.error("Status Code:", error.response?.status);
+
+        // Log full response for 422 errors
+        if (error.response?.status === 422) {
+            console.error("422 Validation Error Details:");
+            console.error("Response Body:", JSON.stringify(error.response?.data, null, 2));
+            console.error("Request Body:", JSON.stringify(error.config?.data, null, 2));
+
+            // Create user-friendly error message
+            const errorMsg = error.response?.data?.message || 'Validation failed';
+            const errors = error.response?.data?.errors || [];
+            let detailedError = `GitHub API validation error: ${errorMsg}`;
+
+            if (errors.length > 0) {
+                detailedError += '\nDetails: ' + errors.map((e: any) =>
+                    `${e.resource || 'unknown'}: ${e.message || e.code || JSON.stringify(e)}`
+                ).join(', ');
+            }
+
+            throw new Error(detailedError);
+        }
 
         // Provide helpful message for common errors
         if (error.response?.status === 409) {

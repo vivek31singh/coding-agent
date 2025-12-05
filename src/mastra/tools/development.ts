@@ -172,6 +172,53 @@ const generateCode = async (userPrompt: string, systemPrompt: string, chatId?: s
   }
 }
 
+export const checkExistingProjectTool = createTool({
+  id: 'check-existing-project',
+  description: 'Check if a project exists for a given chat ID.',
+  inputSchema: z.object({
+    check: z.boolean().optional().describe('Whether to check for an existing project (always true)')
+  }),
+  outputSchema: z.object({
+    project: z.any().describe('Projects found'),
+  }),
+  execute: async ({ context }) => {
+    try {
+      const project = await v0.projects.find();
+      return { project };
+    } catch (error) {
+      console.error('Error checking existing project:', error);
+      return { project: null };
+    }
+  },
+});
+
+export const deleteProjectTool = createTool({
+  id: 'delete-project',
+  description: 'Delete a project for a given chat ID.',
+  inputSchema: z.object({ projectId: z.string().describe('The project ID') }),
+  outputSchema: z.object({
+    id: z.string().describe('The project ID'),
+    object: z.string().describe("Entity type"),
+    deleted: z.boolean().describe("Whether the project was deleted"),
+  }),
+  execute: async ({ context }) => {
+    try {
+      const deletedProject = await v0.projects.delete({
+        projectId: context.projectId,
+      });
+
+      if (!deletedProject) {
+        throw new Error('Project not found');
+      }
+
+      return deletedProject
+    } catch (error) {
+      console.error('Error deleting project:', error);
+      return { id: context.projectId, object: "project", deleted: false }
+    }
+  },
+});
+
 const downloadLatestVersionTool = async (chatId: string, latestVersionId: string) => {
   try {
     const zipData = await v0.chats.downloadVersion({
@@ -210,6 +257,7 @@ export const pushFilesAsCommitTool = createTool({
     newBranch: z.string().optional().describe('Optional: Create and push to a new branch'),
     commitMessage: z.string().describe('The commit message'),
     repoDescription: z.string().optional().describe('Optional: Description for the repository if creating new'),
+    demoUrl: z.string().optional().describe('Optional: Demo URL to append to repository description'),
   }),
   outputSchema: z.object({
     commitSHA: z.string().describe('The SHA of the created commit'),
@@ -224,6 +272,14 @@ export const pushFilesAsCommitTool = createTool({
         throw new Error('No files found in the latest version');
       }
 
+      // Append demo URL to repository description if provided
+      // GitHub doesn't allow control characters (newlines) in descriptions
+      let finalDescription = context.repoDescription || '';
+      if (context.demoUrl) {
+        const separator = finalDescription ? ' | ' : '';
+        finalDescription = finalDescription + `${separator}🔗 Live Demo: ${context.demoUrl}`;
+      }
+
       const pushFilesResp = await pushFilesAsCommit({
         owner: process.env.GITHUB_OWNER!,
         repo: context.repository,
@@ -232,7 +288,7 @@ export const pushFilesAsCommitTool = createTool({
         files: files,
         commitMessage: context.commitMessage,
         token: process.env.GITHUB_TOKEN!,
-        repoDescription: context.repoDescription,
+        repoDescription: finalDescription,
       });
 
       return pushFilesResp;

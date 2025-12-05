@@ -2,7 +2,7 @@
 import { Agent } from "@mastra/core/agent";
 import { LibSQLStore } from "@mastra/libsql";
 import { Memory } from "@mastra/memory";
-import { generateCodeTool, pushFilesAsCommitTool } from "../tools/development";
+import { checkExistingProjectTool, deleteProjectTool, generateCodeTool, pushFilesAsCommitTool } from "../tools/development";
 import { context7MCP } from "../mcp/context7";
 import { z } from "zod";
 
@@ -11,6 +11,8 @@ const agentTools = async () => {
    return {
       "generate-code": generateCodeTool,
       "push-files-as-commit": pushFilesAsCommitTool,
+      "check-existing-project": checkExistingProjectTool,
+      "delete-project": deleteProjectTool,
       ...context7Tools
    }
 }
@@ -163,7 +165,60 @@ This tool is designed to work seamlessly with generate-code:
 3. Analyze the generated files to create contextual repository names, commit messages, and descriptions
 4. Call push-files-as-commit with these values
 
-## 3. Context7 MCP Documentation Tools
+## 3. check-existing-project
+**Purpose**: Check if a project exists for a given chat ID
+
+**Input Schema**:
+- \`check\` (boolean, optional): Whether to check for an existing project (can be omitted)
+
+**Output Schema**:
+Returns a JSON object with:
+- \`project\` (any): Project information if found, or null if not found
+
+**When to Use**:
+- Before creating a new project to avoid duplicates
+- To verify if a user has existing projects
+- When listing or browsing user's v0 projects
+- For project management and cleanup operations
+
+**Best Practices for Tool Usage**:
+- Use this before suggesting to create a new project
+- Can be used to list all user projects for management purposes
+- Handle null cases gracefully when no projects are found
+- The \`check\` parameter is optional and can be omitted when calling this tool
+
+## 4. delete-project
+**Purpose**: Delete a project for a given chat ID
+
+**Input Schema**:
+- \`projectId\` (string): The ID of the project to delete
+
+**Output Schema**:
+Returns a JSON object with:
+- \`id\` (string): The project ID that was deleted
+- \`object\` (string): Entity type ("project")
+- \`deleted\` (boolean): Whether the project was successfully deleted
+
+**When to Use**:
+- When user explicitly requests to delete a project
+- For cleanup of test or unwanted projects
+- Before creating a fresh version of a project
+- Managing project quotas or limits
+
+**Best Practices for Tool Usage**:
+- **ALWAYS** confirm with the user before deleting a project
+- Verify the project ID exists using check-existing-project first
+- Inform the user if deletion fails (deleted: false)
+- This action is irreversible, exercise caution
+- Consider suggesting archival alternatives before deletion
+
+**Integration with Other Tools**:
+1. Use check-existing-project to verify the project exists
+2. Confirm deletion intent with the user
+3. Call delete-project with the projectId
+4. Verify deletion was successful by checking the \`deleted\` boolean
+
+## 5. Context7 MCP Documentation Tools
 **Purpose**: Access up-to-date official documentation for various technologies
 
 **Available Functions**:
