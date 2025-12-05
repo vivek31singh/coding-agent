@@ -1,0 +1,328 @@
+import axios from 'axios';
+
+export async function getBranchSHA(owner: string, repo: string, branch: string, token: string) {
+    const res = await axios.get(
+        `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`,
+        {
+            headers: { Authorization: `token ${token}` }
+        }
+    );
+
+    return res.data.object.sha;
+}
+
+export async function createBlob(owner: string, repo: string, content: string, token: string) {
+    const res = await axios.post(
+        `https://api.github.com/repos/${owner}/${repo}/git/blobs`,
+        {
+            content,
+            encoding: "utf-8"
+        },
+        {
+            headers: { Authorization: `token ${token}` }
+        }
+    );
+
+    return res.data.sha;
+}
+
+export async function createTree(owner: string, repo: string, baseTreeSHA: string, files: { path: string; content: string }[], token: string) {
+    const tree = [];
+
+    for (const file of files) {
+        const blobSHA = await createBlob(owner, repo, file.content, token);
+
+        tree.push({
+            path: file.path,
+            mode: "100644",
+            type: "blob",
+            sha: blobSHA
+        });
+    }
+
+    const res = await axios.post(
+        `https://api.github.com/repos/${owner}/${repo}/git/trees`,
+        {
+            base_tree: baseTreeSHA,
+            tree
+        },
+        {
+            headers: { Authorization: `token ${token}` }
+        }
+    );
+
+    return res.data.sha;
+}
+
+export async function createCommit(owner: string, repo: string, parentSHA: string, treeSHA: string, message: string, token: string) {
+    const res = await axios.post(
+        `https://api.github.com/repos/${owner}/${repo}/git/commits`,
+        {
+            message,
+            parents: [parentSHA],
+            tree: treeSHA
+        },
+        { headers: { Authorization: `token ${token}` } }
+    );
+
+    return res.data.sha;
+}
+
+export async function updateBranch(owner: string, repo: string, branch: string, commitSHA: string, token: string) {
+    await axios.patch(
+        `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`,
+        {
+            sha: commitSHA,
+            force: true
+        },
+        {
+            headers: { Authorization: `token ${token}` }
+        }
+    );
+}
+
+export async function createBranch(owner: string, repo: string, newBranch: string, baseSHA: string, token: string) {
+    console.log(`[git.ts] Creating branch ${newBranch} from ${baseSHA} in ${owner}/${repo}`);
+    try {
+        await axios.post(
+            `https://api.github.com/repos/${owner}/${repo}/git/refs`,
+            {
+                ref: `refs/heads/${newBranch}`,
+                sha: baseSHA
+            },
+            {
+                headers: { Authorization: `token ${token}` }
+            }
+        );
+    } catch (error: any) {
+        // If branch already exists (422), ignore the error
+        if (error.response?.status === 422) {
+            console.log(`Branch ${newBranch} already exists. Skipping creation.`);
+            return;
+        }
+        throw error;
+    }
+}
+
+/**
+ * Create a new GitHub repository
+ * @param name - Repository name
+ * @param isPrivate - Whether the repository should be private (default: true)
+ * @param description - Repository description (optional)
+ * @param token - GitHub personal access token
+ * @param org - Organization name (optional, creates under user if not provided)
+ * @returns Repository data including full_name, html_url, clone_url, etc.
+ */
+export async function createRepository(
+    name: string,
+    isPrivate: boolean,
+    description: string | undefined,
+    token: string,
+    org?: string
+) {
+    const endpoint = org
+        ? `https://api.github.com/orgs/${org}/repos`
+        : 'https://api.github.com/user/repos';
+
+    const res = await axios.post(
+        endpoint,
+        {
+            name,
+            description,
+            private: isPrivate,
+            auto_init: true, // Initialize with README to enable Git Data API
+        },
+        {
+            headers: { Authorization: `token ${token}` }
+        }
+    );
+
+    return {
+        name: res.data.name,
+        fullName: res.data.full_name,
+        htmlUrl: res.data.html_url,
+        cloneUrl: res.data.clone_url,
+        owner: res.data.owner.login,
+    };
+}
+
+/**
+ * Check if a repository exists
+ * @param owner - Repository owner
+ * @param repo - Repository name
+ * @param token - GitHub personal access token
+ * @returns True if repository exists, false otherwise
+ */
+export async function repositoryExists(owner: string, repo: string, token: string): Promise<boolean> {
+    console.log(`[git.ts] Checking if repository exists: ${owner}/${repo}`);
+    try {
+        await axios.get(
+            `https://api.github.com/repos/${owner}/${repo}`,
+            {
+                headers: { Authorization: `token ${token}` }
+            }
+        );
+        return true;
+    } catch (error: any) {
+        if (error.response?.status === 404) {
+            console.log(`[git.ts] Repository ${owner}/${repo} not found (404).`);
+            return false;
+        }
+        console.error(`[git.ts] Error checking repository existence: ${error.message} Status: ${error.response?.status}`);
+        throw error;
+    }
+}
+
+/**
+ * Verify token permissions and owner
+ * @param token - GitHub personal access token
+ * @returns Object containing login and scopes
+ */
+export async function verifyToken(token: string) {
+    console.log(`[git.ts] Verifying token permissions...`);
+    try {
+        const res = await axios.get('https://api.github.com/user', {
+            headers: { Authorization: `token ${token}` }
+        });
+
+        const scopes = res.headers['x-oauth-scopes'] || '';
+        console.log(`[git.ts] Token verified. User: ${res.data.login}, Scopes: ${scopes}`);
+
+        return {
+            login: res.data.login,
+            scopes: scopes.split(',').map((s: string) => s.trim())
+        };
+    } catch (error: any) {
+        console.error(`[git.ts] Token verification failed: ${error.message}`);
+        if (error.response) {
+            console.error(`[git.ts] Status: ${error.response.status}`);
+            console.error(`[git.ts] Body: ${JSON.stringify(error.response.data)}`);
+        }
+        throw new Error(`GitHub token verification failed: ${error.message}`);
+    }
+}
+
+export async function pushFilesAsCommit({
+    owner,
+    repo,
+    baseBranch,
+    newBranch,
+    files,
+    commitMessage,
+    token,
+    repoDescription
+}: {
+    owner: string;
+    repo: string;
+    baseBranch: string;
+    newBranch: string;
+    files: { path: string; content: string }[];
+    commitMessage: string;
+    token: string;
+    repoDescription?: string;
+}) {
+    console.log(`[git.ts] pushFilesAsCommit called for ${owner}/${repo}`);
+    const tokenMasked = token ? `${token.substring(0, 7)}...${token.substring(token.length - 4)}` : 'undefined';
+    console.log(`[git.ts] Token present: ${!!token}, length: ${token?.length}, value: ${tokenMasked}`);
+
+    try {
+        // 0. Verify token first
+        const tokenInfo = await verifyToken(token);
+
+        // Check if token owner matches requested owner (unless it's an org, which is harder to check without more calls)
+        // But logging it is enough for debugging
+        if (tokenInfo.login.toLowerCase() !== owner.toLowerCase()) {
+            console.warn(`[git.ts] WARNING: Token owner (${tokenInfo.login}) does not match requested owner (${owner}). This might be intended if pushing to an organization.`);
+        }
+
+        // Check for required scopes
+        const requiredScopes = ['repo']; // 'repo' covers everything for private repos. 'public_repo' for public.
+        const hasRepoScope = tokenInfo.scopes.includes('repo');
+        const hasPublicRepoScope = tokenInfo.scopes.includes('public_repo');
+
+        if (!hasRepoScope && !hasPublicRepoScope) {
+            console.warn(`[git.ts] WARNING: Token seems to be missing 'repo' or 'public_repo' scope. Scopes found: ${tokenInfo.scopes.join(', ')}`);
+        }
+
+        // 1. Check if repository exists, create if not
+        const exists = await repositoryExists(owner, repo, token);
+
+        if (!exists) {
+            console.log(`Repository ${owner}/${repo} does not exist. Creating...`);
+            const newRepo = await createRepository(
+                repo,
+                false, // public repository to match token scope
+                repoDescription || `Generated repository from v0`,
+                token
+            );
+            console.log(`Repository created: ${newRepo.htmlUrl}`);
+
+            // Wait a moment for GitHub to fully initialize the repository
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        // 2. Get base branch SHA
+        console.log(`[git.ts] Getting SHA for branch ${baseBranch}...`);
+        const baseSHA = await getBranchSHA(owner, repo, baseBranch, token);
+
+        // If creating a new branch
+        if (newBranch) {
+            await createBranch(owner, repo, newBranch, baseSHA, token);
+            baseBranch = newBranch;
+        }
+
+        // 3. Get tree SHA of base branch
+        console.log(`[git.ts] Getting tree SHA for commit ${baseSHA}...`);
+        const res = await axios.get(
+            `https://api.github.com/repos/${owner}/${repo}/git/commits/${baseSHA}`,
+            {
+                headers: { Authorization: `token ${token}` }
+            }
+        );
+        const baseTreeSHA = res.data.tree.sha;
+
+        // 4. Create new tree
+        console.log(`[git.ts] Creating new tree with ${files.length} files...`);
+        const newTreeSHA = await createTree(
+            owner,
+            repo,
+            baseTreeSHA,
+            files,
+            token
+        );
+
+        // 5. Create commit
+        console.log(`[git.ts] Creating commit...`);
+        const commitSHA = await createCommit(
+            owner,
+            repo,
+            baseSHA,
+            newTreeSHA,
+            commitMessage,
+            token
+        );
+
+        // 6. Update branch
+        console.log(`[git.ts] Updating branch ${baseBranch} to ${commitSHA}...`);
+        await updateBranch(owner, repo, baseBranch, commitSHA, token);
+
+        return {
+            commitSHA,
+            repoUrl: `https://github.com/${owner}/${repo}`,
+            branchUrl: `https://github.com/${owner}/${repo}/tree/${baseBranch}`,
+        };
+    } catch (error: any) {
+        console.error("Error in pushFilesAsCommit:", error.response?.data || error.message);
+        console.error("Failed Request URL:", error.config?.url);
+        console.error("Failed Request Method:", error.config?.method);
+        console.error("Status Code:", error.response?.status);
+
+        // Provide helpful message for common errors
+        if (error.response?.status === 409) {
+            console.error("409 Conflict - This usually means the repository or branch already exists.");
+            console.error("Repository:", `${owner}/${repo}`);
+        }
+
+        throw error;
+    }
+}
